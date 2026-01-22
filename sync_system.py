@@ -1,30 +1,33 @@
 import json
 import requests
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+import os
+import traceback
 from datetime import datetime
 
 # ==========================================
-# [1] 설정 파일(config.json) 읽어오기
+# [1] 설정 파일 읽기
 # ==========================================
 def load_config():
     try:
-        with open('config.json', 'r', encoding='utf-8') as f:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        config_path = os.path.join(base_dir, 'config.json')
+        with open(config_path, 'r', encoding='utf-8') as f:
             return json.load(f)
     except FileNotFoundError:
-        print("❌ 오류: 'config.json' 파일을 찾을 수 없습니다.")
+        print(f"❌ 오류: 설정 파일을 찾을 수 없습니다.")
         exit()
 
 CONFIG = load_config()
 
-# 단축 변수 설정 (사용하기 편하게)
+# 단축 변수
 NOTION_KEY = CONFIG["NOTION"]["API_KEY"]
 NOTION_DB_ID = CONFIG["NOTION"]["DATABASE_ID"]
 PROP_NAMES = CONFIG["NOTION"]["PROPERTY_NAMES"]
 RULES = CONFIG["CLEANING_RULES"]
 
 # ==========================================
-# [2] 노션 데이터 가져오기
+# [2] 노션 데이터 가져오기 (수정됨)
 # ==========================================
 def fetch_notion_data():
     url = f"https://api.notion.com/v1/databases/{NOTION_DB_ID}/query"
@@ -35,56 +38,69 @@ def fetch_notion_data():
         "Notion-Version": "2022-06-28"
     }
     
-    # 설정 파일에 지정된 '예약상태'와 '값(예약확정)'으로 필터링
+    # [핵심 수정] 400 오류 해결을 위해 'select' -> 'status'로 변경 시도
+    # (만약 노션 속성이 진짜 Select라면 다시 select로 바꿔야 하지만, 스크린샷상 Status가 확실함)
     payload = {
         "filter": {
             "property": PROP_NAMES["STATUS"], 
-            "select": {
+            "status": {  # <--- 여기가 'select'에서 'status'로 바뀜!
                 "equals": PROP_NAMES["STATUS_VALUE"]
             }
         }
     }
     
     response = requests.post(url, json=payload, headers=headers)
+    
     if response.status_code != 200:
         print(f"❌ 노션 연결 실패: {response.status_code}")
-        print(response.text)
+        print(f"이유: {response.text}")
         return []
         
     return response.json().get("results", [])
 
 # ==========================================
-# [3] 청소 정보 계산 (데이/나이트 판별)
+# [3] 청소 정보 계산 (제목 분석 기능 추가)
 # ==========================================
-def parse_cleaning_info(props):
-    # 1. 지점명 가져오기
-    branch = ""
-    p_branch = props.get(PROP_NAMES["BRANCH"]) # config에 적힌 이름으로 찾음
-    if p_branch and p_branch["select"]:
-        branch = p_branch["select"]["name"]
+def parse_cleaning_info(page):
+    props = page["properties"]
     
-    # 2. 날짜 가져오기
+    # 1. 지점명 (Select)
+    branch = ""
+    if props.get(PROP_NAMES["BRANCH"]) and props[PROP_NAMES["BRANCH"]]["select"]:
+        branch = props[PROP_NAMES["BRANCH"]]["select"]["name"]
+    
+    # 2. 날짜 (Date)
     r_date = ""
-    p_date = props.get(PROP_NAMES["DATE"])
-    if p_date and p_date["date"]:
-        r_date = p_date["date"]["start"]
+    if props.get(PROP_NAMES["DATE"]) and props[PROP_NAMES["DATE"]]["date"]:
+        r_date = props[PROP_NAMES["DATE"]]["date"]["start"]
 
-    # 3. 패키지 정보 및 시간 계산
+    # 3. 패키지 정보 (속성 또는 제목에서 찾기)
     pkg_name = ""
-    p_pkg = props.get(PROP_NAMES["PACKAGE"])
-    if p_pkg and p_pkg["select"]:
-        pkg_name = p_pkg["select"]["name"]
-
-    # 기본값 초기화
+    
+    # (A) 먼저 속성에서 찾아봄
+    if props.get(PROP_NAMES["PACKAGE"]) and props[PROP_NAMES["PACKAGE"]]["select"]:
+        pkg_name = props[PROP_NAMES["PACKAGE"]]["select"]["name"]
+    
+    # (B) 속성에 없으면 '제목(Title)'을 분석 (스크린샷에 제목에 패키지명이 있어서 추가함)
+    if not pkg_name:
+        # 제목 속성 찾기 (보통 '이름', 'Name', '제목' 중 하나)
+        for key, val in props.items():
+            if val['type'] == 'title' and val['title']:
+                full_title = val['title'][0]['plain_text'] # 예: "황세빈 - 나이트 패키지..."
+                if "나이트" in full_title:
+                    pkg_name = "나이트 패키지"
+                elif "데이" in full_title:
+                    pkg_name = "데이 패키지"
+                break
+    
+    # 4. 시간 계산
     start_time, end_time, duration = "", "", ""
-
-    # 패키지 이름에 따른 로직 (데이/시간제 vs 나이트)
     if "나이트" in pkg_name:
         start_time = RULES["NIGHT_START"]
         end_time = RULES["NIGHT_END"]
         duration = RULES["NIGHT_HOURS"]
     else:
-        # 데이패키지 또는 시간제 (기본값)
+        # 기본값 (데이/시간제)
         start_time = RULES["DAY_START"]
         end_time = RULES["DAY_END"]
         duration = RULES["DAY_HOURS"]
@@ -92,59 +108,50 @@ def parse_cleaning_info(props):
     return branch, r_date, pkg_name, start_time, end_time, duration
 
 # ==========================================
-# [4] 메인 실행 함수 (구글 시트 전송)
+# [4] 메인 실행 함수
 # ==========================================
 def main():
     print("🔄 시스템 가동: 노션 데이터를 확인합니다...")
     
-    # 구글 시트 연결
+    sheet = None
     try:
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds = ServiceAccountCredentials.from_json_keyfile_name(
-            CONFIG["GOOGLE"]["JSON_KEY_FILE"], scope
-        )
-        client = gspread.authorize(creds)
-        sheet = client.open(CONFIG["GOOGLE"]["SHEET_NAME"]).worksheet(CONFIG["GOOGLE"]["SHEET_TAB_NAME"])
-    except Exception as e:
-        print(f"❌ 구글 시트 연결 오류: {e}")
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        key_path = os.path.join(base_dir, CONFIG["GOOGLE"]["JSON_KEY_FILE"])
+        
+        gc = gspread.service_account(filename=key_path)
+        
+        sheet_id = CONFIG["GOOGLE"].get("SHEET_ID")
+        if not sheet_id:
+            print("⚠️ 경고: SHEET_ID가 설정되지 않았습니다.")
+            return
+            
+        sheet = gc.open_by_key(sheet_id).worksheet(CONFIG["GOOGLE"]["SHEET_TAB_NAME"])
+        
+    except Exception:
+        print("\n❌ 구글 시트 연결 실패!")
+        traceback.print_exc()
         return
 
-    # 기존 데이터 확인 (중복 방지)
-    existing_ids = sheet.col_values(1) # A열(No) 조회
+    # 기존 데이터 확인
+    existing_ids = sheet.col_values(1) 
 
     # 노션 조회
     pages = fetch_notion_data()
     print(f"📋 노션에서 {len(pages)}개의 확정된 예약을 찾았습니다.")
     
     new_count = 0
-    
     for page in pages:
-        page_id = page["id"].replace("-", "") # ID 깔끔하게 정리
-        
-        # 이미 등록된 건이면 패스
+        page_id = page["id"].replace("-", "") 
         if page_id in existing_ids:
             continue
             
-        # 노션 속성(Properties) 가져오기
-        props = page["properties"]
+        # [변경] page 전체를 넘겨서 제목까지 분석하게 함
+        branch, r_date, pkg_name, t_start, t_end, dur = parse_cleaning_info(page)
         
-        # 데이터 해석 (위에서 만든 함수 사용)
-        branch, r_date, pkg_name, t_start, t_end, dur = parse_cleaning_info(props)
-        
-        # 구글 시트에 넣을 데이터 순서 (헤더와 일치해야 함)
-        # [No, 지점명, 날짜, 패키지종류, 시작가능, 마감, 소요시간, (방문시간), (담당자), 상태, SMS발송]
         row = [
-            page_id,    # A
-            branch,     # B
-            r_date,     # C
-            pkg_name,   # D
-            t_start,    # E
-            t_end,      # F
-            dur,        # G
-            "",         # H (방문예상시간 - 비워둠)
-            "",         # I (담당자 - 비워둠)
-            "대기",     # J
-            "X"         # K
+            page_id, branch, r_date, pkg_name, 
+            t_start, t_end, dur, 
+            "", "", "대기", "X"
         ]
         
         sheet.append_row(row)
