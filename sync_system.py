@@ -73,7 +73,7 @@ def fetch_reservations(start_str, search_end_str):
     collected_list = []
     stop_search = False
 
-    print("🔄 스케줄 충돌 정밀 감지 중... (문자열 범위 파싱 적용)")
+    print("🔄 스케줄 변동(취소/변경) 정밀 추적 중...")
 
     while has_more and not stop_search:
         if next_cursor: payload["start_cursor"] = next_cursor
@@ -185,7 +185,7 @@ def main():
     start_str, target_end_str, search_end_str = get_this_week_range()
     target_end_date = datetime.strptime(target_end_str, "%Y-%m-%d").date()
 
-    print(f"🚀 시스템 가동: [Glide 앱 연동 모드] 범위 문자열('08:00 ~ 10:00') 인식")
+    print(f"🚀 시스템 가동: [취소 건 삭제 & 스케줄 변경 알림]")
     print(f"📅 타겟 기간: {start_str} ~ {target_end_str}")
 
     sheet = None
@@ -207,12 +207,14 @@ def main():
         for i, row in enumerate(all_rows[1:], start=2):
             if row: 
                 r_id = row[0]
-                r_deadline = row[5] if len(row) > 5 else "" # F열
-                r_visit_time = row[7] if len(row) > 7 else "" # H열 (예: "08:00 ~ 10:00")
-                r_status = row[9] if len(row) > 9 else ""   # J열
+                r_date = row[2] 
+                r_deadline = row[5] if len(row) > 5 else "" 
+                r_visit_time = row[7] if len(row) > 7 else ""
+                r_status = row[9] if len(row) > 9 else "" 
                 
                 existing_data_map[r_id] = {
                     "row_idx": i,
+                    "date": r_date,
                     "deadline": r_deadline,
                     "visit_time": r_visit_time,
                     "status": r_status
@@ -225,6 +227,8 @@ def main():
     reservations = fetch_reservations(start_str, search_end_str)
     reservations.sort(key=lambda x: x["clean_start_dt"])
     
+    processed_ids = set()
+
     new_count = 0
     update_count = 0
     conflict_count = 0
@@ -236,6 +240,7 @@ def main():
         if current["is_ordered"]: continue
         
         current_id_clean = current["id"].replace("-", "")
+        processed_ids.add(current_id_clean) 
         
         # 🧠 다음 예약 계산
         deadline_text = "다음 예약 없음"
@@ -253,7 +258,7 @@ def main():
         if future_bookings:
             next_booking = future_bookings[0]
             next_time = next_booking["check_in_dt"]
-            next_time_obj = next_time # 객체 저장
+            next_time_obj = next_time 
             
             clean_day = current["clean_start_dt"].date()
             next_day = next_time.date()
@@ -279,39 +284,31 @@ def main():
             
             if deadline_text != old_deadline:
                 row_idx = existing_info["row_idx"]
-                new_status = existing_info["status"]
+                new_status = "🚨변경" 
                 is_conflict = False
                 
-                # 🛑 충돌 검사 (문자열 파싱 "08:00 ~ 10:00")
+                # 충돌 검사
                 if visit_time_str and next_time_obj:
                     try:
-                        # "~" 문자가 있는지 확인
                         if "~" in visit_time_str:
-                            # "08:00 ~ 10:00" -> " 10:00" -> "10:00" 추출
                             _, end_str = visit_time_str.split("~")
-                            end_str = end_str.strip() # 공백 제거
-                            
+                            end_str = end_str.strip() 
                             clean_date = current["clean_start_dt"].date()
                             visit_end_dt = datetime.combine(clean_date, datetime.strptime(end_str, "%H:%M").time())
                             
-                            # (선택한 종료 시간)이 (다음 입실 시간)보다 늦으면 충돌!
                             if visit_end_dt > next_time_obj:
                                 is_conflict = True
                                 new_status = "🚨시간겹침" 
                                 conflict_count += 1
                                 print(f"  🚨 [시간겹침] {current['branch']} | 종료:{end_str} vs 입실:{next_time_obj.strftime('%H:%M')}")
-                        else:
-                            pass # 형식이 다르면 패스
-
-                    except ValueError:
-                        pass 
+                    except ValueError: pass 
 
                 try:
                     sheet.update_cell(row_idx, 6, deadline_text)
-                    if is_conflict:
-                        sheet.update_cell(row_idx, 10, new_status)
+                    sheet.update_cell(row_idx, 10, new_status) 
+                    
                     if not is_conflict:
-                        print(f"  ℹ️ [정보갱신] {current['branch']} | 마감시간 변경됨 (안전)")
+                        print(f"  ℹ️ [스케줄변경] {current['branch']} | {old_deadline} -> {deadline_text} (상태:🚨변경)")
                     update_count += 1
                 except Exception as e:
                     print(f"  ❌ 업데이트 실패: {e}")
@@ -338,8 +335,31 @@ def main():
         except Exception as e:
             print(f"  ❌ 업로드 실패: {e}")
 
+    # ------------------------------------------------
+    # 🗑️ 삭제 로직 (수정됨: delete_rows 사용)
+    # ------------------------------------------------
+    rows_to_delete = []
+    for sheet_id, info in existing_data_map.items():
+        try:
+            row_date = info["date"]
+            if start_str <= row_date <= target_end_str:
+                if sheet_id not in processed_ids:
+                    rows_to_delete.append(info["row_idx"])
+        except:
+            continue
+
+    rows_to_delete.sort(reverse=True)
+    
+    for row_idx in rows_to_delete:
+        try:
+            # [수정] delete_row -> delete_rows 로 변경
+            sheet.delete_rows(row_idx)
+            print(f"  🗑️ [삭제] 예약 취소됨 (Row {row_idx})")
+        except Exception as e:
+            print(f"  ❌ 삭제 실패: {e}")
+
     print("-" * 30)
-    print(f"🎉 결과: 신규 {new_count}건 / 갱신 {update_count}건 / 시간겹침 {conflict_count}건")
+    print(f"🎉 결과: 신규 {new_count} / 갱신 {update_count} / 삭제 {len(rows_to_delete)} / 겹침 {conflict_count}")
 
 if __name__ == "__main__":
     main()
