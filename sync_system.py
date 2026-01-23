@@ -24,41 +24,20 @@ NOTION_DB_ID = CONFIG["NOTION"]["DATABASE_ID"]
 PROP_NAMES = CONFIG["NOTION"]["PROPERTY_NAMES"]
 RULES = CONFIG["CLEANING_RULES"]
 
-# 한국 시간대(KST) 정의
 KST = timezone(timedelta(hours=9))
 
 # ==========================================
-# [함수] 담당자 자동 배정 (선릉점 규칙 업데이트)
+# [함수] 담당자 자동 배정
 # ==========================================
 def get_manager_name(branch, clean_dt):
-    """
-    지점과 청소 날짜(요일)를 기준으로 담당자를 자동으로 결정합니다.
-    clean_dt: datetime 객체 (청소 시작 시간)
-    """
-    # 0:월, 1:화, 2:수, 3:목, 4:금, 5:토, 6:일
     day_index = clean_dt.weekday() 
-    
-    if branch in ["천호점", "군자점"]:
-        return "김영미"
-    
-    elif branch == "건대점":
-        return "강상윤"
-        
-    elif branch == "왕십리점":
-        return "이수연"
-        
+    if branch in ["천호점", "군자점"]: return "김영미"
+    elif branch == "건대점": return "강상윤"
+    elif branch == "왕십리점": return "이수연"
     elif branch == "선릉점":
-        # [수정됨] 금(4), 토(5), 일(6) -> 이인욱님
-        if day_index >= 4:
-            return "이인욱"
-        # 월(0) ~ 목(3) -> 김진욱님
-        else:
-            return "김진욱"
-            
-    elif branch == "강남점":
-        return "손섭준" 
-        
-    return "" # 그 외 지점은 빈칸
+        return "이인욱" if day_index >= 4 else "김진욱"
+    elif branch == "강남점": return "손섭준" 
+    return "" 
 
 # ==========================================
 # [함수] 날짜 범위 계산
@@ -86,12 +65,7 @@ def fetch_reservations(start_str, search_end_str):
             "property": PROP_NAMES["STATUS"],
             "status": {"equals": PROP_NAMES["STATUS_VALUE"]}
         },
-        "sorts": [
-            {
-                "property": PROP_NAMES["DATE"], 
-                "direction": "descending"
-            }
-        ]
+        "sorts": [{"property": PROP_NAMES["DATE"], "direction": "descending"}]
     }
 
     has_more = True
@@ -99,7 +73,7 @@ def fetch_reservations(start_str, search_end_str):
     collected_list = []
     stop_search = False
 
-    print("🔄 스케줄 정밀 분석 중... ")
+    print("🔄 스케줄 충돌 정밀 감지 중... (문자열 범위 파싱 적용)")
 
     while has_more and not stop_search:
         if next_cursor: payload["start_cursor"] = next_cursor
@@ -112,22 +86,18 @@ def fetch_reservations(start_str, search_end_str):
         
         for page in results:
             props = page["properties"]
-            
-            if not (props.get(PROP_NAMES["DATE"]) and props[PROP_NAMES["DATE"]]["date"]):
-                continue
+            if not (props.get(PROP_NAMES["DATE"]) and props[PROP_NAMES["DATE"]]["date"]): continue
 
             date_data = props[PROP_NAMES["DATE"]]["date"]
             start_iso = date_data["start"]
             end_iso = date_data.get("end")
             r_date_str = start_iso.split("T")[0]
 
-            # 1차 필터
             if r_date_str > search_end_str: continue 
             if r_date_str < start_str: 
                 stop_search = True
                 break
 
-            # 데이터 추출
             is_ordered = False
             target_prop = props.get(PROP_NAMES["ORDER_CHECK"])
             if target_prop and target_prop["type"] == "select" and target_prop["select"]:
@@ -153,17 +123,14 @@ def fetch_reservations(start_str, search_end_str):
                 elif "올데이" in full_title: pkg_name = "올데이"
                 else: pkg_name = "시간제"
 
-            # 🕒 시간 계산 (KST 변환 필수)
             try:
                 dt_start = datetime.fromisoformat(start_iso)
-                if dt_start.tzinfo is not None:
-                    dt_start = dt_start.astimezone(KST)
+                if dt_start.tzinfo is not None: dt_start = dt_start.astimezone(KST)
                 dt_start = dt_start.replace(tzinfo=None)
 
                 if end_iso:
                     dt_end = datetime.fromisoformat(end_iso)
-                    if dt_end.tzinfo is not None:
-                        dt_end = dt_end.astimezone(KST)
+                    if dt_end.tzinfo is not None: dt_end = dt_end.astimezone(KST)
                     dt_end = dt_end.replace(tzinfo=None)
                 else:
                     dt_end = dt_start + timedelta(hours=3)
@@ -173,25 +140,27 @@ def fetch_reservations(start_str, search_end_str):
 
             cleaning_start_dt = None
             cleaning_end_dt = None
+            clean_duration_hours = 0 
             
             if "나이트" in pkg_name:
                 cleaning_start_dt = dt_start.replace(hour=8, minute=0) + timedelta(days=1)
-                cleaning_end_dt = cleaning_start_dt + timedelta(hours=2)
+                clean_duration_hours = 2
+                cleaning_end_dt = cleaning_start_dt + timedelta(hours=clean_duration_hours)
+                
             elif "데이" in pkg_name:
                 cleaning_start_dt = dt_start.replace(hour=17, minute=0)
-                cleaning_end_dt = cleaning_start_dt + timedelta(hours=1)
-            else: 
-                # [시간제/올데이]
-                cleaning_start_dt = dt_end
+                clean_duration_hours = 1
+                cleaning_end_dt = cleaning_start_dt + timedelta(hours=clean_duration_hours)
                 
-                # 심야/새벽 방어 로직 (KST 기준)
+            else: 
+                cleaning_start_dt = dt_end
                 if cleaning_start_dt.hour >= 21:
                      cleaning_start_dt = cleaning_start_dt.replace(hour=8, minute=0) + timedelta(days=1)
                 elif cleaning_start_dt.hour < 8:
                      cleaning_start_dt = cleaning_start_dt.replace(hour=8, minute=0)
                 
-                clean_duration = 1 
-                cleaning_end_dt = cleaning_start_dt + timedelta(hours=clean_duration)
+                clean_duration_hours = 1 
+                cleaning_end_dt = cleaning_start_dt + timedelta(hours=clean_duration_hours)
 
             collected_list.append({
                 "id": page["id"],
@@ -200,7 +169,8 @@ def fetch_reservations(start_str, search_end_str):
                 "is_ordered": is_ordered,
                 "check_in_dt": dt_start,   
                 "clean_start_dt": cleaning_start_dt, 
-                "clean_end_dt": cleaning_end_dt      
+                "clean_end_dt": cleaning_end_dt,
+                "duration_hours": clean_duration_hours
             })
 
         has_more = data.get("has_more")
@@ -215,11 +185,12 @@ def main():
     start_str, target_end_str, search_end_str = get_this_week_range()
     target_end_date = datetime.strptime(target_end_str, "%Y-%m-%d").date()
 
-    print(f"🚀 시스템 가동: [청소 담당자 반영]")
+    print(f"🚀 시스템 가동: [Glide 앱 연동 모드] 범위 문자열('08:00 ~ 10:00') 인식")
     print(f"📅 타겟 기간: {start_str} ~ {target_end_str}")
 
     sheet = None
-    existing_ids = set()
+    existing_data_map = {} 
+    
     try:
         base_dir = os.path.dirname(os.path.abspath(__file__))
         key_path = os.path.join(base_dir, CONFIG["GOOGLE"]["JSON_KEY_FILE"])
@@ -230,30 +201,46 @@ def main():
             sheet = gc.open(CONFIG["GOOGLE"]["SHEET_NAME"]).worksheet(CONFIG["GOOGLE"]["SHEET_TAB_NAME"])
         else:
             sheet = gc.open_by_key(sheet_id).worksheet(CONFIG["GOOGLE"]["SHEET_TAB_NAME"])
+        
+        all_rows = sheet.get_all_values()
+        
+        for i, row in enumerate(all_rows[1:], start=2):
+            if row: 
+                r_id = row[0]
+                r_deadline = row[5] if len(row) > 5 else "" # F열
+                r_visit_time = row[7] if len(row) > 7 else "" # H열 (예: "08:00 ~ 10:00")
+                r_status = row[9] if len(row) > 9 else ""   # J열
+                
+                existing_data_map[r_id] = {
+                    "row_idx": i,
+                    "deadline": r_deadline,
+                    "visit_time": r_visit_time,
+                    "status": r_status
+                }
             
-        existing_ids = set(sheet.col_values(1))
-    except Exception:
-        print("❌ 구글 시트 연결 실패!")
+    except Exception as e:
+        print(f"❌ 구글 시트 연결 실패: {e}")
         return
 
     reservations = fetch_reservations(start_str, search_end_str)
     reservations.sort(key=lambda x: x["clean_start_dt"])
     
-    count = 0
+    new_count = 0
+    update_count = 0
+    conflict_count = 0
     
     for i, current in enumerate(reservations):
         
-        # 날짜 필터
         check_in_date = current["check_in_dt"].date()
         if check_in_date > target_end_date: continue
-
         if current["is_ordered"]: continue
         
         current_id_clean = current["id"].replace("-", "")
-        if current_id_clean in existing_ids: continue
-            
-        # 다음 예약 확인
+        
+        # 🧠 다음 예약 계산
         deadline_text = "다음 예약 없음"
+        next_time_obj = None 
+        
         future_bookings = []
         for other in reservations:
             if current["id"] == other["id"]: continue
@@ -266,12 +253,12 @@ def main():
         if future_bookings:
             next_booking = future_bookings[0]
             next_time = next_booking["check_in_dt"]
+            next_time_obj = next_time # 객체 저장
             
             clean_day = current["clean_start_dt"].date()
             next_day = next_time.date()
             time_str = next_time.strftime("%H:%M")
             date_str = next_time.strftime("%m/%d")
-            
             gap_hours = (next_time - current["clean_end_dt"]).total_seconds() / 3600
 
             if clean_day == next_day:
@@ -282,12 +269,61 @@ def main():
                 if gap_hours < 2: deadline_text = f"⚠다음 예약 {date_str} {time_str} 입실"
                 else: deadline_text = f"다음 예약 {date_str} {time_str}"
 
-        # 담당자 배정
-        manager_name = get_manager_name(current["branch"], current["clean_start_dt"])
+        # ------------------------------------------------
+        # 🔄 분기점: 신규 vs 업데이트
+        # ------------------------------------------------
+        if current_id_clean in existing_data_map:
+            existing_info = existing_data_map[current_id_clean]
+            old_deadline = existing_info["deadline"]
+            visit_time_str = existing_info["visit_time"]
+            
+            if deadline_text != old_deadline:
+                row_idx = existing_info["row_idx"]
+                new_status = existing_info["status"]
+                is_conflict = False
+                
+                # 🛑 충돌 검사 (문자열 파싱 "08:00 ~ 10:00")
+                if visit_time_str and next_time_obj:
+                    try:
+                        # "~" 문자가 있는지 확인
+                        if "~" in visit_time_str:
+                            # "08:00 ~ 10:00" -> " 10:00" -> "10:00" 추출
+                            _, end_str = visit_time_str.split("~")
+                            end_str = end_str.strip() # 공백 제거
+                            
+                            clean_date = current["clean_start_dt"].date()
+                            visit_end_dt = datetime.combine(clean_date, datetime.strptime(end_str, "%H:%M").time())
+                            
+                            # (선택한 종료 시간)이 (다음 입실 시간)보다 늦으면 충돌!
+                            if visit_end_dt > next_time_obj:
+                                is_conflict = True
+                                new_status = "🚨시간겹침" 
+                                conflict_count += 1
+                                print(f"  🚨 [시간겹침] {current['branch']} | 종료:{end_str} vs 입실:{next_time_obj.strftime('%H:%M')}")
+                        else:
+                            pass # 형식이 다르면 패스
 
+                    except ValueError:
+                        pass 
+
+                try:
+                    sheet.update_cell(row_idx, 6, deadline_text)
+                    if is_conflict:
+                        sheet.update_cell(row_idx, 10, new_status)
+                    if not is_conflict:
+                        print(f"  ℹ️ [정보갱신] {current['branch']} | 마감시간 변경됨 (안전)")
+                    update_count += 1
+                except Exception as e:
+                    print(f"  ❌ 업데이트 실패: {e}")
+            
+            continue
+
+        # ------------------------------------------------
+        # 🆕 신규 등록
+        # ------------------------------------------------
+        manager_name = get_manager_name(current["branch"], current["clean_start_dt"])
         t_start = current["clean_start_dt"].strftime("%H:%M")
-        duration_sec = (current["clean_end_dt"] - current["clean_start_dt"]).total_seconds()
-        duration = str(int(duration_sec / 3600))
+        duration = str(current["duration_hours"]) 
         clean_date_str = current["clean_start_dt"].strftime("%Y-%m-%d")
 
         row = [
@@ -297,15 +333,13 @@ def main():
 
         try:
             sheet.append_row(row)
-            print(f"  ✅ [등록] {current['branch']} | {clean_date_str} {t_start} | 담당: {manager_name}")
-            count += 1
+            print(f"  ✅ [신규] {current['branch']} | {clean_date_str} {t_start} | {deadline_text}")
+            new_count += 1
         except Exception as e:
             print(f"  ❌ 업로드 실패: {e}")
 
-    if count > 0:
-        print(f"🎉 총 {count}건 처리 완료!")
-    else:
-        print("✅ 새로 추가할 예약이 없습니다.")
+    print("-" * 30)
+    print(f"🎉 결과: 신규 {new_count}건 / 갱신 {update_count}건 / 시간겹침 {conflict_count}건")
 
 if __name__ == "__main__":
     main()
