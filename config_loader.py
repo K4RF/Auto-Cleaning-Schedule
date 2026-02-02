@@ -26,3 +26,16 @@ GOOGLE_JSON_KEY = CONFIG["GOOGLE"]["JSON_KEY_FILE"]
 SHEET_NAME = CONFIG["GOOGLE"]["SHEET_NAME"]
 SHEET_TAB_NAME = CONFIG["GOOGLE"]["SHEET_TAB_NAME"]
 SHEET_ID = CONFIG["GOOGLE"].get("SHEET_ID")
+
+# [New] 시트 열 번호 정의 (1부터 시작)
+# 나중에 시트 순서가 바뀌면 이 숫자만 수정하면 됩니다.
+COLS = {
+    "ID": 1,          # A열
+    "DATE": 3,        # C열
+    "DEADLINE": 6,    # F열 (마감시간)
+    "VISIT_TIME": 8,  # H열 (방문예정시간)
+    "STATUS": 10,     # J열 (상태)
+    "SMS_STAFF": 11,  # K열 (담당자문자)
+    "SMS_MANAGER": 12, # L열 (매니저알림)
+    "VALID_SLOTS": 13 # M열: 가능한시간대
+}
