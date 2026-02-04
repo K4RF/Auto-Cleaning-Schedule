@@ -174,21 +174,21 @@ def main():
                 time.sleep(1.0) 
                 
                 if is_conflict:
-                    new_status = "🚨방문충돌"
+                    new_status = "방문시간 충돌"
                     resend_target_manager = True 
                     resend_target_staff = True 
                 else:
-                    new_status = "🔔마감변경"
+                    new_status = "마감시간 변경"
                     resend_target_staff = True
                 
                 need_update = True
                 if is_deadline_changed:
-                    logging.info(f"  🔔 [변동감지] {current['branch']} | 마감 변경 ({old_deadline} -> {deadline_text})")
+                    logging.info(f"  🔔[변동감지] {current['branch']} | 마감시간 변경 ({old_deadline} -> {deadline_text})")
 
             else:
                 if is_conflict:
-                    if current_status != "🚨방문충돌":
-                        new_status = "🚨방문충돌"
+                    if current_status != "방문시간 충돌":
+                        new_status = "방문시간 충돌"
                         need_update = True
                         resend_target_manager = True 
                         resend_target_staff = True 
@@ -198,7 +198,7 @@ def main():
                         new_status = "발주완료"
                         need_update = True
                         logging.info(f"  ✅ [발주확정] {current['branch']} | 시간 선택 완료 -> 발주완료")
-                    elif visit_time_str != "시간 미정" and current_status == "🚨방문충돌":
+                    elif visit_time_str != "시간 미정" and current_status == "방문시간 충돌":
                         new_status = "발주완료"
                         need_update = True
                         logging.info(f"  ♻️ [충돌해결] {current['branch']} | 시간 수정됨 -> 발주완료 복구")
