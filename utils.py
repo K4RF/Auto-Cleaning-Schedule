@@ -26,94 +26,91 @@ def get_manager_name(branch, clean_dt):
 # ==========================================
 def get_this_week_range():
     today = date.today()
-    start_of_week = today - timedelta(days=today.weekday()) 
-    end_of_week = start_of_week + timedelta(days=6)
+    start_of_week = today - timedelta(days=today.weekday()) # 월요일
+    end_of_week = start_of_week + timedelta(days=6)       # 일요일
+    
+    # [수정] 다음 예약 확인을 위해 다음 주 화요일(+2일)까지 넉넉히 조회
     search_end = end_of_week + timedelta(days=2) 
+    
     return start_of_week.strftime("%Y-%m-%d"), end_of_week.strftime("%Y-%m-%d"), search_end.strftime("%Y-%m-%d")
 
 # ==========================================
-# [함수] 청소 설정 계산 (핵심 로직)
+# [함수] 청소 설정 계산 (사장님 규칙 적용)
 # ==========================================
 def calculate_cleaning_config(check_in_dt, check_out_dt, pkg_name):
-    """
-    [규칙] 모든 청소는 이용객 '퇴실 후' 진행
-    - 나이트: 익일 아침 08:00 시작 (2시간)
-    - 데이: 당일 오후 17:00 시작 (1시간)
-    - 시간제: 퇴실 직후 시작 (1시간)
-    """
     check_in_date = check_in_dt.date()
-    
+    duration = 1
+    base_start_dt = check_out_dt
+
+    # 1. 나이트 패키지 (19:00 ~ 익일 08:00 예약)
+    # -> 청소: 다음 날 아침 08:00 시작 / 2시간 소요
     if "나이트" in pkg_name:
         next_day = check_in_date + timedelta(days=1)
         base_start_dt = datetime.combine(next_day, datetime.strptime("08:00", "%H:%M").time())
         duration = 2
         
+    # 2. 데이 패키지 (10:00 ~ 17:00 예약)
+    # -> 청소: 당일 17:00 시작 / 1시간 소요
     elif "데이" in pkg_name:
         base_start_dt = datetime.combine(check_in_date, datetime.strptime("17:00", "%H:%M").time())
         duration = 1
         
+    # 3. 시간제 (퇴실 직후)
     else: 
-        base_start_dt = check_out_dt
         duration = 1
-        
-        # 밤 9시(21시) 넘으면 -> 다음날 아침 8시로
+        # [규칙] 밤 21시(09:00 PM) 이후 종료라면 -> 다음 날 아침 08:00로 이동
         if base_start_dt.hour >= 21:
             base_start_dt = base_start_dt.replace(hour=8, minute=0) + timedelta(days=1)
-        # 너무 이른 새벽(8시 전)이면 -> 아침 8시로
+            
+        # (혹시나 새벽 0~7시에 끝나는 경우도 아침 8시로)
         elif base_start_dt.hour < 8:
             base_start_dt = base_start_dt.replace(hour=8, minute=0)
 
     return base_start_dt, duration
 
 # ==========================================
-# [함수] notion_fetcher 호환용 (3개 반환)
+# [함수] notion_fetcher 호환용 래퍼
 # ==========================================
 def calculate_cleaning_time(check_in_dt, check_out_dt, pkg_name):
-    """
-    notion_fetcher.py 오류 방지용 래퍼 함수
-    """
     start_dt, duration = calculate_cleaning_config(check_in_dt, check_out_dt, pkg_name)
     end_dt = start_dt + timedelta(hours=duration)
     return start_dt, end_dt, duration
 
 # ==========================================
-# [함수] 가능한 시간대 목록 생성 (9시 컷 + 1시간 간격)
+# [함수] 가능한 시간대 목록 생성
 # ==========================================
 def generate_valid_slots(start_dt, duration_hours, next_booking_dt=None):
     slots = []
     
-    # 1. 기본 마감 시간 설정 (다음 예약 or 12시간 뒤)
+    # 마감 시간 설정
     if next_booking_dt:
         limit_dt = next_booking_dt
     else:
-        limit_dt = start_dt + timedelta(hours=12) 
+        limit_dt = start_dt + timedelta(hours=12)
 
-    # 2. [New] 밤 9시(21:00) 컷 로직 적용
-    # "만약 9시 이전에 끝났어? 그러면 9시까지만 포함시켜줘"
+    # 밤 9시 컷 로직
     cutoff_21pm = start_dt.replace(hour=21, minute=0, second=0, microsecond=0)
     
-    earliest_end_time = start_dt + timedelta(hours=duration_hours)
-
-    # 조건: 가장 빠른 종료 시간이 21:00 이하라면 -> 마지노선을 21:00로 당김
-    if earliest_end_time <= cutoff_21pm:
+    earliest_end = start_dt + timedelta(hours=duration_hours)
+    if earliest_end <= cutoff_21pm:
         if limit_dt > cutoff_21pm:
             limit_dt = cutoff_21pm
 
+    # 슬롯 생성 (1시간 단위)
     current = start_dt
     safety_limit = start_dt + timedelta(hours=36)
 
     while current < safety_limit:
         clean_end = current + timedelta(hours=duration_hours)
         
-        # 마감 시간을 넘으면 중단
         if clean_end > limit_dt:
             break
             
         start_str = current.strftime("%H:%M")
         end_str = clean_end.strftime("%H:%M")
+        
         slots.append(f"{start_str} ~ {end_str}")
         
-        # 1시간 간격
         current += timedelta(hours=1)
     
     if not slots:
