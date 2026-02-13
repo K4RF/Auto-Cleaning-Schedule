@@ -1,99 +1,57 @@
-# debug_filter_v2.py
 import requests
 import json
 import os
-from datetime import datetime
+from config_loader import NOTION_KEY, PROP_NAMES
 
-print("🚀 디버거 시작! (1/4)")
+# 문제가 된 예약의 ID (사장님 로그에서 복사함)
+TARGET_PAGE_ID = "3011b1ca-2919-8182-b65b-eefa8b27ea2d"
 
-# 1. config.json 직접 로드 (경로 문제 원천 차단)
-try:
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    config_path = os.path.join(base_dir, 'config.json')
-    with open(config_path, 'r', encoding='utf-8') as f:
-        config = json.load(f)
-    print("✅ config.json 로드 성공 (2/4)")
-except Exception as e:
-    print(f"❌ config.json 로드 실패: {e}")
-    exit()
-
-NOTION_KEY = config["NOTION"]["API_KEY"]
-NOTION_DB_ID = config["NOTION"]["DATABASE_ID"]
-PROP_NAMES = config["NOTION"]["PROPERTY_NAMES"]
-
-def check_why_fetched():
-    url = f"https://api.notion.com/v1/databases/{NOTION_DB_ID}/query"
+def inspect_specific_page():
+    print(f"🕵️‍♂️ 문제의 예약({TARGET_PAGE_ID}) 정밀 분석 중...")
+    
+    url = f"https://api.notion.com/v1/pages/{TARGET_PAGE_ID}"
     headers = {
         "Authorization": f"Bearer {NOTION_KEY}",
         "Content-Type": "application/json",
         "Notion-Version": "2022-06-28"
     }
-
-    target_col = PROP_NAMES["ORDER_CHECK"]
-    print(f"🔎 타겟 컬럼명: '{target_col}' (3/4)")
-
-    # 필터: 오늘 이후 + 예약완료
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    payload = {
-        "filter": {
-            "and": [
-                {
-                    "property": PROP_NAMES["DATE"],
-                    "date": {"on_or_after": today_str}
-                },
-                {
-                    "property": PROP_NAMES["STATUS"],
-                    "status": {"equals": PROP_NAMES["STATUS_VALUE"]}
-                }
-            ]
-        }
-    }
-
-    print(f"📡 노션 API 요청 중... ({today_str} 이후)")
-    response = requests.post(url, json=payload, headers=headers)
     
+    response = requests.get(url, headers=headers)
     if response.status_code != 200:
-        print(f"❌ API 오류: {response.status_code} {response.text}")
+        print(f"❌ 페이지 조회 실패: {response.status_code}")
+        print(response.text)
         return
 
-    results = response.json().get("results", [])
-    print(f"📥 총 {len(results)}개 데이터 수신됨 (4/4)\n")
-
-    for i, page in enumerate(results):
-        props = page["properties"]
+    data = response.json()
+    props = data["properties"]
+    
+    # 1. 청소 발주 여부 확인
+    target_col = PROP_NAMES["ORDER_CHECK"]
+    print(f"\n1. ['{target_col}'] 컬럼 분석")
+    
+    if target_col not in props:
+        print(f"   🚨 치명적 오류: 이 페이지에는 '{target_col}'라는 속성이 아예 없습니다!")
+        print(f"   👉 가능한 속성 목록: {list(props.keys())}")
+    else:
+        val = props[target_col]
+        print(f"   📄 Raw Data: {json.dumps(val, ensure_ascii=False)}")
         
-        # 지점명 확인
-        branch = "미지정"
-        if "select" in props.get(PROP_NAMES["BRANCH"], {}) and props[PROP_NAMES["BRANCH"]]["select"]:
-            branch = props[PROP_NAMES["BRANCH"]]["select"]["name"]
-        
-        date_val = "날짜없음"
-        if props.get(PROP_NAMES["DATE"], {}).get("date"):
-            date_val = props[PROP_NAMES["DATE"]]["date"]["start"]
-
-        print(f"👉 [{i+1}] {branch} | {date_val}")
-
-        # [핵심] 청소 발주 여부 값 확인
-        if target_col not in props:
-            print(f"   ❌ 속성 없음! (노션엔 없고 config에만 있음)")
-            print(f"   -> 실제 속성 목록: {list(props.keys())}")
-            continue
-
-        order_prop = props[target_col]
-        # 전체 구조 출력 (어떤 타입인지 확인용)
-        print(f"   📄 속성 데이터: {json.dumps(order_prop, ensure_ascii=False)}")
-
-        # Select 타입 체크
-        if "select" in order_prop:
-            val = order_prop["select"]
-            if val is None:
-                print("   ✅ 값: 비어있음 (None)")
+        if "select" in val:
+            if val["select"] is None:
+                print("   ❌ 결과: '비어있음(None)'으로 확인됨 -> 그래서 가져온 것임!")
             else:
-                print(f"   ⛔ 값: '{val['name']}' (ID: {val['id']})")
+                print(f"   ✅ 결과: '{val['select']['name']}' 선택됨 -> (정상이라면 안 가져와야 함)")
         else:
-            print(f"   ❓ 타입이 select가 아님! ({list(order_prop.keys())})")
-        
-        print("-" * 30)
+            print(f"   ❓ 결과: Select 타입이 아님 ({val['type']})")
+
+    # 2. 패키지 이름 확인 (중요)
+    print(f"\n2. 패키지 이름 확인")
+    pkg_col = PROP_NAMES["PACKAGE"]
+    if pkg_col in props:
+        print(f"   설정된 컬럼명: {pkg_col}")
+        print(f"   📄 Raw Data: {json.dumps(props[pkg_col], ensure_ascii=False)}")
+    else:
+         print(f"   ⚠️ 설정된 패키지 컬럼('{pkg_col}')을 찾을 수 없음")
 
 if __name__ == "__main__":
-    check_why_fetched()
+    inspect_specific_page()
