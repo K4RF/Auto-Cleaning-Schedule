@@ -17,9 +17,15 @@
 
 ## 프로젝트 구조
 
-- `main.py`: 전체 자동화 흐름을 제어하는 메인 실행 파일
-- `notion_fetcher.py`: Notion DB에서 데이터를 조회하고 1차 가공하는 모듈
-- `config_loader.py`: Notion 및 Firebase API 키, DB ID 등 설정 정보를 관리
-- `utils.py`: 날짜 계산, 관리자 배정 등 보조 함수를 포함하는 모듈
-- `check_columns.py`: (사용 시) 데이터베이스 컬럼을 검증하는 스크립트
-- `debug_filter.py`: (사용 시) 특정 조건의 데이터를 필터링하기 위한 디버깅용 스크립트
+- main.py: 전체 자동화 흐름을 제어하는 메인 실행 파일
+- notion_fetcher.py: Notion DB에서 데이터를 조회하고 1차 가공하는 모듈
+- config_loader.py: Notion 및 Firebase API 키, DB ID 등 설정 정보를 관리
+- utils.py: 날짜 계산, 관리자 배정 등 보조 함수를 포함하는 모듈
+
+## Firebase
+- 로그인 계정: gonggan.nine@gmail.com
+- 프로젝트명: cleaning-app-gonggan9
+
+## app sheet
+- 로그인 계정: gonggan.nine@gmail.com
+- 프로젝트명: 공간나인_청소_스케쥴
